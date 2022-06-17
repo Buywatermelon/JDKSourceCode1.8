@@ -379,32 +379,37 @@ public class ReentrantReadWriteLock
 
         protected final boolean tryAcquire(int acquires) {
             /*
-             * Walkthrough:
-             * 1. If read count nonzero or write count nonzero
-             *    and owner is a different thread, fail.
-             * 2. If count would saturate, fail. (This can only
-             *    happen if count is already nonzero.)
-             * 3. Otherwise, this thread is eligible for lock if
-             *    it is either a reentrant acquire or
-             *    queue policy allows it. If so, update state
-             *    and set owner.
+             * 能够获取写锁的场景：
+             * 1. 没有线程持有写锁锁
+             * 2. 持有写锁的线程为当前线程（重入）
+             * 不能获取写锁的场景：
+             * 1. 读锁被持有（不能从读锁升级为写锁，因此读锁即使被当前线程持有，获取写锁也会失败）
+             * 2. 持有写锁的线程不为当前线程
+             * 3. 写锁的重入次数超过最大次数，(1 << 16) - 1
+             * 4. CAS更改锁状态失败
              */
+            // w代表写锁的计数，为state的低16位
             Thread current = Thread.currentThread();
             int c = getState();
             int w = exclusiveCount(c);
+            // 写锁可重入
             if (c != 0) {
-                // (Note: if c != 0 and w == 0 then shared count != 0)
-                if (w == 0 || current != getExclusiveOwnerThread())
+                if (w == 0 // 存在读锁（读写锁不可升级，因此存在读锁就直接加锁失败）
+                    || current != getExclusiveOwnerThread()) // 持有线程写锁的线程不是当前线程
                     return false;
+                // 重入次数达到上限，超过低16位
                 if (w + exclusiveCount(acquires) > MAX_COUNT)
                     throw new Error("Maximum lock count exceeded");
-                // Reentrant acquire
+                // 写锁重入，重入次数+1
+                // 可以看到，在重入时，没有使用CAS操作更改状态。这时因为当前线程已经持有锁了，不会再有其他线程来干扰当前线程的操作了。
                 setState(c + acquires);
                 return true;
             }
-            if (writerShouldBlock() ||
-                !compareAndSetState(c, c + acquires))
+
+            if (writerShouldBlock() // 分公平锁总是返回false
+                    || !compareAndSetState(c, c + acquires)) // CAS更改锁状态
                 return false;
+            // 获取锁成功
             setExclusiveOwnerThread(current);
             return true;
         }
