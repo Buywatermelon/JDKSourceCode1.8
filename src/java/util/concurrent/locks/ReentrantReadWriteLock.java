@@ -369,6 +369,7 @@ public class ReentrantReadWriteLock
         protected final boolean tryRelease(int releases) {
             if (!isHeldExclusively())
                 throw new IllegalMonitorStateException();
+            // 锁重入时，只有 state 减为0，才释放成功
             int nextc = getState() - releases;
             boolean free = exclusiveCount(nextc) == 0;
             if (free)
@@ -388,13 +389,13 @@ public class ReentrantReadWriteLock
              * 3. 写锁的重入次数超过最大次数，(1 << 16) - 1
              * 4. CAS更改锁状态失败
              */
-            // w代表写锁的计数，为state的低16位
             Thread current = Thread.currentThread();
             int c = getState();
+            // w代表写锁的计数，为state的低16位
             int w = exclusiveCount(c);
-            // 写锁可重入
+            // c != 0 表示存在锁
             if (c != 0) {
-                if (w == 0 // 存在读锁（读写锁不可升级，因此存在读锁就直接加锁失败）
+                if (w == 0 // w == 0 表示不存在写锁，只存在读锁，ReentrantReadWriteLock不可从读锁升级为写锁，因此存在读锁就直接加锁失败
                     || current != getExclusiveOwnerThread()) // 持有线程写锁的线程不是当前线程
                     return false;
                 // 重入次数达到上限，超过低16位
@@ -406,8 +407,11 @@ public class ReentrantReadWriteLock
                 return true;
             }
 
-            if (writerShouldBlock() // 分公平锁总是返回false
-                    || !compareAndSetState(c, c + acquires)) // CAS更改锁状态
+            if (
+                    // 公平锁何非公平锁的差异，公平锁需要判断当前线程优先级是否能够抢占锁。非公平锁总是返回false
+                    writerShouldBlock()
+                    // 抢占锁，cas更改AQS状态
+                    || !compareAndSetState(c, c + acquires))
                 return false;
             // 获取锁成功
             setExclusiveOwnerThread(current);
@@ -468,13 +472,19 @@ public class ReentrantReadWriteLock
              */
             Thread current = Thread.currentThread();
             int c = getState();
+            // 如果是其他线程持有写锁，获取读锁失败
             if (exclusiveCount(c) != 0 &&
                 getExclusiveOwnerThread() != current)
                 return -1;
             int r = sharedCount(c);
-            if (!readerShouldBlock() &&
-                r < MAX_COUNT &&
-                compareAndSetState(c, c + SHARED_UNIT)) {
+            if (
+                    // 当等待唤醒的节点（头节点的后继节点）为抢占写锁时，只需要为当前线程加读锁
+                    // 如果抢占读锁，需要一起被唤醒。
+                    !readerShouldBlock() &&
+                    // 当前获取读锁的线程小于最大值
+                    r < MAX_COUNT &&
+                    // 当前线程获取读锁
+                    compareAndSetState(c, c + SHARED_UNIT)) {
                 if (r == 0) {
                     firstReader = current;
                     firstReaderHoldCount = 1;
